@@ -25,16 +25,16 @@ export default function MusicRecommendationRow() {
         <div className="animate-blob animation-delay-2000 absolute -left-8 bottom-0 h-36 w-36 rounded-full bg-gradient-to-br from-violet-500/20 to-purple-500/20 blur-2xl" />
       </div>
       <div className="relative">
-        <div className="mb-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500/30 to-purple-500/30">
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500/30 to-purple-500/30">
               <RiMusic2Line className="h-4 w-4 text-violet-400" />
             </div>
-            <h3 className="text-sm font-bold text-white">
+            <h3 className="text-sm font-bold text-white whitespace-nowrap">
               Music for your mood
             </h3>
           </div>
-          <button className="text-xs text-slate-300 transition hover:text-white">
+          <button className="text-xs text-slate-300 transition hover:text-white shrink-0 whitespace-nowrap">
             See all
           </button>
         </div>

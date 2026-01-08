@@ -1,85 +1,112 @@
-'use client';
+"use client";
 
-import React, { useRef, useState, useEffect } from 'react';
-import type { Mood } from '@/app/lib/mockData';
-import { moodConfigs } from '@/app/lib/moodConfig';
+import React, { useRef, useState, useEffect, useCallback } from "react";
+import type { Mood } from "@/app/lib/mockData";
+import { moodConfigs } from "@/app/lib/moodConfig";
 
-const moods: Mood[] = ['happy', 'sad', 'calm', 'angry', 'excited', 'tired'];
+const moods: Mood[] = ["happy", "sad", "calm", "angry", "excited", "tired"];
 
 interface CameraMoodDetectorProps {
   onMoodSuggested?: (mood: Mood) => void;
 }
 
-type FaceApiModule = typeof import('face-api.js');
+type FaceApiModule = typeof import("face-api.js");
 
-export default function CameraMoodDetector({ onMoodSuggested }: CameraMoodDetectorProps) {
+interface DetectionResult {
+  mood: Mood;
+  confidence: number;
+  expression: string;
+}
+
+export default function CameraMoodDetector({
+  onMoodSuggested,
+}: CameraMoodDetectorProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+
   const [isScanning, setIsScanning] = useState(false);
   const [suggestedMood, setSuggestedMood] = useState<Mood | null>(null);
-  const [note, setNote] = useState<string>('Camera data is not stored.');
-  const [error, setError] = useState<string | null>(null);
+  const [confidence, setConfidence] = useState<number>(0);
+  const [detectedExpression, setDetectedExpression] = useState<string>("");
+  const [note, setNote] = useState<string>("Camera data is not stored.");
   const [faceApi, setFaceApi] = useState<FaceApiModule | null>(null);
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [isLivePreview, setIsLivePreview] = useState(false);
+  const [detectionHistory, setDetectionHistory] = useState<DetectionResult[]>(
+    []
+  );
+  const [showHistory, setShowHistory] = useState(false);
 
   // Lazy-load face-api.js on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const mod = await import('face-api.js');
+        const mod = await import("face-api.js");
         if (cancelled) return;
         setFaceApi(mod);
-        // Try to load models from /models; if missing, we'll fall back to random suggestions.
-        const modelUrl = '/models';
+        const modelUrl = "/models";
         await Promise.all([
           mod.nets.tinyFaceDetector.loadFromUri(modelUrl),
           mod.nets.faceExpressionNet.loadFromUri(modelUrl),
         ]);
         if (!cancelled) {
           setModelsLoaded(true);
-          setNote('Models loaded. Camera data is not stored.');
+          setNote("Models loaded. Camera data is not stored.");
         }
       } catch {
         if (!cancelled) {
-          // Still allow random simulation if models are not present.
-          setNote('Using simple mood guess. Camera data is not stored.');
+          setNote("Using simple mood guess. Camera data is not stored.");
         }
       }
     })();
 
     return () => {
       cancelled = true;
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
+      stopStream();
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
       }
     };
   }, []);
 
-  const stopStream = () => {
+  const stopStream = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-  };
+    setIsLivePreview(false);
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+  }, []);
 
-  const mapExpressionToMood = (expression: string | undefined): Mood => {
+  const mapExpressionToMood = (
+    expression: string | undefined,
+    confidence: number
+  ): Mood => {
     switch (expression) {
-      case 'happy':
-        return 'happy';
-      case 'sad':
-        return 'sad';
-      case 'angry':
-        return 'angry';
-      case 'surprised':
-      case 'fearful':
-        return 'excited';
-      case 'disgusted':
-        return 'angry';
-      case 'neutral':
+      case "happy":
+        return "happy";
+      case "sad":
+        return "sad";
+      case "angry":
+        return "angry";
+      case "surprised":
+      case "fearful":
+        return "excited";
+      case "disgusted":
+        return "angry";
+      case "neutral":
       default: {
-        // Neutral → calm or tired
-        return Math.random() > 0.5 ? 'calm' : 'tired';
+        // Low confidence neutral → calm or tired
+        if (confidence < 0.3) {
+          return Math.random() > 0.5 ? "calm" : "tired";
+        }
+        return "calm";
       }
     }
   };
@@ -89,12 +116,110 @@ export default function CameraMoodDetector({ onMoodSuggested }: CameraMoodDetect
     return moods[index];
   };
 
+  // Real-time face detection preview
+  const startLivePreview = useCallback(async () => {
+    if (!faceApi || !modelsLoaded || !videoRef.current || !canvasRef.current)
+      return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+
+    const detect = async () => {
+      if (!videoRef.current || !canvasRef.current || !faceApi) return;
+
+      try {
+        const { TinyFaceDetectorOptions } = faceApi;
+        const detections = await faceApi
+          .detectSingleFace(videoRef.current, new TinyFaceDetectorOptions())
+          .withFaceExpressions();
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+
+        if (detections) {
+          // Draw face box
+          const box = detections.detection.box;
+          ctx.strokeStyle = "#00ff00";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(box.x, box.y, box.width, box.height);
+
+          // Show expression
+          const expressions = detections.expressions;
+          const sorted = Object.entries(expressions).sort(
+            (a, b) => b[1] - a[1]
+          );
+          const [topExpression, topConfidence] = sorted[0];
+
+          ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+          ctx.fillRect(box.x, box.y - 30, box.width, 25);
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "14px sans-serif";
+          ctx.fillText(
+            `${topExpression} ${Math.round(topConfidence * 100)}%`,
+            box.x + 5,
+            box.y - 10
+          );
+
+          setDetectedExpression(topExpression);
+          setConfidence(topConfidence);
+        }
+      } catch (err) {
+        // Silently fail for preview
+      }
+
+      if (isLivePreview) {
+        animationFrameRef.current = requestAnimationFrame(detect);
+      }
+    };
+
+    detect();
+  }, [faceApi, modelsLoaded, isLivePreview]);
+
+  useEffect(() => {
+    if (isLivePreview && modelsLoaded) {
+      startLivePreview();
+    } else {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      if (canvasRef.current) {
+        const ctx = canvasRef.current.getContext("2d");
+        if (ctx && videoRef.current) {
+          ctx.clearRect(
+            0,
+            0,
+            canvasRef.current.width,
+            canvasRef.current.height
+          );
+          ctx.drawImage(
+            videoRef.current,
+            0,
+            0,
+            canvasRef.current.width,
+            canvasRef.current.height
+          );
+        }
+      }
+    }
+  }, [isLivePreview, modelsLoaded, startLivePreview]);
+
   const handleScan = async () => {
     try {
       setIsScanning(true);
       setSuggestedMood(null);
-      setError(null);
-      setNote(modelsLoaded ? 'Looking at your vibe…' : 'Looking at your vibe (simple guess)…');
+      setConfidence(0);
+      setDetectedExpression("");
+      setNote(
+        modelsLoaded
+          ? "Analyzing multiple frames for accuracy…"
+          : "Looking at your vibe (simple guess)…"
+      );
 
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       streamRef.current = stream;
@@ -103,8 +228,19 @@ export default function CameraMoodDetector({ onMoodSuggested }: CameraMoodDetect
         await videoRef.current.play();
       }
 
-      setTimeout(async () => {
-        let mood: Mood;
+      // Multi-frame analysis for better accuracy
+      const frameResults: Array<{ expression: string; confidence: number }> =
+        [];
+      const frameCount = modelsLoaded ? 5 : 1;
+      const frameDelay = modelsLoaded ? 300 : 1400;
+
+      for (let i = 0; i < frameCount; i++) {
+        await new Promise((resolve) => setTimeout(resolve, frameDelay));
+
+        if (!videoRef.current) break;
+
+        let expression: string | undefined;
+        let conf = 0;
 
         if (faceApi && modelsLoaded && videoRef.current) {
           try {
@@ -113,45 +249,92 @@ export default function CameraMoodDetector({ onMoodSuggested }: CameraMoodDetect
               .detectSingleFace(videoRef.current, new TinyFaceDetectorOptions())
               .withFaceExpressions();
 
-            const expression =
-              detections?.expressions &&
-              Object.entries(detections.expressions).sort((a, b) => b[1] - a[1])[0]?.[0];
-
-            mood = mapExpressionToMood(expression);
+            if (detections?.expressions) {
+              const sorted = Object.entries(detections.expressions).sort(
+                (a, b) => b[1] - a[1]
+              );
+              [expression, conf] = sorted[0];
+            }
           } catch {
-            mood = randomFallbackMood();
+            // Skip this frame
           }
-        } else {
-          mood = randomFallbackMood();
         }
 
-        stopStream();
-        setSuggestedMood(mood);
-        setNote('Suggestion only. Tap to apply if it feels right.');
-        setIsScanning(false);
-      }, 1400);
-    } catch (err: unknown) {
+        if (expression && conf > 0.2) {
+          frameResults.push({ expression, confidence: conf });
+        }
+      }
+
+      stopStream();
+
+      let mood: Mood;
+      let finalConfidence = 0;
+      let finalExpression = "";
+
+      if (frameResults.length > 0) {
+        // Average confidence and pick most common expression
+        const expressionCounts: Record<
+          string,
+          { count: number; totalConf: number }
+        > = {};
+        frameResults.forEach((r) => {
+          if (!expressionCounts[r.expression]) {
+            expressionCounts[r.expression] = { count: 0, totalConf: 0 };
+          }
+          expressionCounts[r.expression].count++;
+          expressionCounts[r.expression].totalConf += r.confidence;
+        });
+
+        const mostCommon = Object.entries(expressionCounts).sort(
+          (a, b) => b[1].count - a[1].count
+        )[0];
+
+        finalExpression = mostCommon[0];
+        finalConfidence = mostCommon[1].totalConf / mostCommon[1].count;
+        mood = mapExpressionToMood(finalExpression, finalConfidence);
+      } else {
+        mood = randomFallbackMood();
+        finalConfidence = 0.5;
+        finalExpression = "neutral";
+      }
+
+      const result: DetectionResult = {
+        mood,
+        confidence: finalConfidence,
+        expression: finalExpression,
+      };
+
+      setDetectionHistory((prev) => [result, ...prev.slice(0, 4)]);
+      setSuggestedMood(mood);
+      setConfidence(finalConfidence);
+      setDetectedExpression(finalExpression);
+      setNote(
+        finalConfidence > 0.6
+          ? `High confidence (${Math.round(
+              finalConfidence * 100
+            )}%). Tap to apply if it feels right.`
+          : "Suggestion only. Tap to apply if it feels right."
+      );
+      setIsScanning(false);
+    } catch (err) {
       stopStream();
       setIsScanning(false);
-      
-      if (err instanceof Error) {
-        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          setError('Camera permission denied');
-          setNote('Please allow camera access in your browser settings to use this feature.');
-        } else if (err.name === 'NotFoundError') {
-          setError('No camera found');
-          setNote('Please connect a camera to use this feature.');
-        } else if (err.name === 'NotReadableError') {
-          setError('Camera in use');
-          setNote('Your camera might be in use by another application. Please close other apps and try again.');
-        } else {
-          setError('Camera unavailable');
-          setNote('Unable to access camera. Please check your device settings.');
-        }
-      } else {
-        setError('Camera unavailable');
-        setNote('Unable to access camera. Please try again.');
+      setNote("Camera blocked. Try again if you like.");
+    }
+  };
+
+  const handleStartPreview = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        setIsLivePreview(true);
+        setNote('Live preview active. Click "Scan" to analyze.');
       }
+    } catch {
+      setNote("Camera blocked. Try again if you like.");
     }
   };
 
@@ -167,67 +350,143 @@ export default function CameraMoodDetector({ onMoodSuggested }: CameraMoodDetect
         <div>
           <p className="text-lg font-semibold">Camera mood assist</p>
           <p className="mt-1 text-[11px] text-white/60">
-            Smile → happy · Relaxed face → calm · Frown → sad · Intense look → angry · Wide eyes → excited
+            Smile → happy · Relaxed face → calm · Frown → sad · Intense look →
+            angry · Wide eyes → excited
           </p>
         </div>
         <span className="text-[11px] rounded-full border border-white/15 bg-white/10 px-3 py-1 text-white/70">
-          {modelsLoaded ? 'face‑api.js loaded' : 'simple guess mode'}
+          {modelsLoaded ? "face‑api.js loaded" : "simple guess mode"}
         </span>
       </div>
 
-      <div className="relative rounded-2xl bg-black/40 border border-white/10 overflow-hidden h-52 flex items-center justify-center">
-        <video ref={videoRef} className="w-full h-full object-cover opacity-70" playsInline muted />
-        {error && !isScanning && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-rose-900/40 backdrop-blur-sm">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-rose-500/30 border-2 border-rose-400">
-              <svg className="h-8 w-8 text-rose-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-            </div>
-            <div className="text-center px-4">
-              <p className="font-semibold text-rose-200">{error}</p>
-              <p className="text-xs text-rose-300 mt-1">Tap scan to try again</p>
-            </div>
-          </div>
-        )}
-        {!isScanning && !suggestedMood && !error && (
+      <div className="relative rounded-2xl bg-black/40 border border-white/10 overflow-hidden h-64 flex items-center justify-center">
+        <video
+          ref={videoRef}
+          className="w-full h-full object-cover opacity-70"
+          playsInline
+          muted
+          style={{ display: isLivePreview && modelsLoaded ? "none" : "block" }}
+        />
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full object-cover"
+          style={{ display: isLivePreview && modelsLoaded ? "block" : "none" }}
+        />
+        {!isScanning && !suggestedMood && !isLivePreview && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-white/75">
-            <span>{modelsLoaded ? 'One quick look, no recording.' : 'Models not found, using simple guess.'}</span>
-            <span className="text-[11px] text-white/60">Tip: smile or exaggerate your expression for a clearer read.</span>
+            <span>
+              {modelsLoaded
+                ? "One quick look, no recording."
+                : "Models not found, using simple guess."}
+            </span>
+            <span className="text-[11px] text-white/60">
+              Tip: smile or exaggerate your expression for a clearer read.
+            </span>
           </div>
         )}
         {isScanning && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/40">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60">
             <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-            <p className="text-xs text-white/80">Scanning mood…</p>
+            <p className="text-xs text-white/80">Analyzing mood…</p>
+            {modelsLoaded && (
+              <p className="text-[10px] text-white/60">
+                Processing multiple frames for accuracy
+              </p>
+            )}
           </div>
         )}
         {suggestedMood && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-black/40 border border-white/30 backdrop-blur-md animate-scale-in">
-              <span className="text-3xl">{moodConfigs[suggestedMood].emoji}</span>
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-black/60 border border-white/30 backdrop-blur-md">
+                <span className="text-3xl">
+                  {moodConfigs[suggestedMood].emoji}
+                </span>
+              </div>
+              {confidence > 0 && (
+                <div className="rounded-full bg-black/60 px-3 py-1 text-xs text-white/90">
+                  {Math.round(confidence * 100)}% confidence
+                </div>
+              )}
             </div>
           </div>
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-2">
+        {modelsLoaded && !isLivePreview && !isScanning && (
+          <button
+            onClick={handleStartPreview}
+            className="px-3 py-2 rounded-full text-xs font-semibold bg-white/10 text-white hover:bg-white/20 border border-white/20"
+          >
+            Live Preview
+          </button>
+        )}
         <button
           onClick={handleScan}
           disabled={isScanning}
-          className="px-4 py-2 rounded-full text-sm font-semibold bg-white text-gray-900 hover:bg-white/90 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
-          aria-label={isScanning ? 'Scanning face' : 'Scan face to detect mood'}
+          className="flex-1 px-4 py-2 rounded-full text-sm font-semibold bg-white text-gray-900 hover:bg-white/90 disabled:opacity-60"
         >
-          {isScanning ? 'Scanning…' : error ? 'Try again' : 'Scan face / gesture'}
+          {isScanning ? "Scanning…" : "Scan face / gesture"}
         </button>
-        <p className="text-[11px] text-white/60 text-right max-w-xs">{note}</p>
+        {isLivePreview && (
+          <button
+            onClick={() => {
+              stopStream();
+              setNote("Preview stopped.");
+            }}
+            className="px-3 py-2 rounded-full text-xs font-semibold bg-red-500/20 text-red-300 hover:bg-red-500/30 border border-red-500/30"
+          >
+            Stop
+          </button>
+        )}
       </div>
+
+      {detectionHistory.length > 0 && (
+        <div className="space-y-2">
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="text-xs text-white/60 hover:text-white/80 flex items-center gap-1"
+          >
+            <span>Recent detections ({detectionHistory.length})</span>
+            <span>{showHistory ? "▼" : "▶"}</span>
+          </button>
+          {showHistory && (
+            <div className="space-y-1">
+              {detectionHistory.map((result, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">
+                      {moodConfigs[result.mood].emoji}
+                    </span>
+                    <span className="capitalize">{result.mood}</span>
+                    <span className="text-white/50">({result.expression})</span>
+                  </div>
+                  <span className="text-white/60">
+                    {Math.round(result.confidence * 100)}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {suggestedMood && (
         <div className="flex items-center justify-between rounded-2xl bg-white/10 border border-white/20 px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="text-xl">{moodConfigs[suggestedMood].emoji}</span>
-            <span className="text-sm capitalize">{suggestedMood}</span>
+            <div>
+              <span className="text-sm capitalize block">{suggestedMood}</span>
+              {detectedExpression && (
+                <span className="text-[10px] text-white/60">
+                  {detectedExpression} expression
+                </span>
+              )}
+            </div>
           </div>
           <button
             onClick={applySuggestion}
@@ -239,9 +498,9 @@ export default function CameraMoodDetector({ onMoodSuggested }: CameraMoodDetect
       )}
 
       <p className="text-[11px] text-white/50">
-        Camera data is not stored. face-api.js runs only in your browser to suggest a mood — nothing is uploaded or saved.
+        Camera data is not stored. face-api.js runs only in your browser to
+        suggest a mood — nothing is uploaded or saved.
       </p>
     </section>
   );
 }
-

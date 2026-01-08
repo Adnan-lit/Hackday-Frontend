@@ -60,16 +60,16 @@ export default function MatchedEmotionRow() {
         <div className="animate-blob absolute -right-8 top-0 h-32 w-32 rounded-full bg-gradient-to-br from-pink-500/20 to-rose-500/20 blur-2xl" />
       </div>
       <div className="relative">
-        <div className="mb-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-pink-500/30 to-rose-500/30">
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-pink-500/30 to-rose-500/30">
               <RiHeart3Line className="h-4 w-4 text-pink-400" />
             </div>
-            <h3 className="text-sm font-bold text-white">
+            <h3 className="text-sm font-bold text-white whitespace-nowrap">
               People feeling the same
             </h3>
           </div>
-          <button className="text-xs text-slate-300 transition hover:text-white">
+          <button className="text-xs text-slate-300 transition hover:text-white shrink-0 whitespace-nowrap">
             See all
           </button>
         </div>
@@ -96,16 +96,16 @@ export default function MatchedEmotionRow() {
                       {person.emoji}
                     </div>
                   </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-white">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-white truncate">
                       {person.name}
                     </p>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-slate-300">
+                      <span className="text-xs text-slate-300 whitespace-nowrap">
                         {moodConfigs[person.mood].label}
                       </span>
-                      <span className="h-1 w-1 rounded-full bg-slate-400"></span>
-                      <span className="text-xs text-slate-400">2h ago</span>
+                      <span className="h-1 w-1 rounded-full bg-slate-400 shrink-0"></span>
+                      <span className="text-xs text-slate-400 whitespace-nowrap">2h ago</span>
                     </div>
                   </div>
                 </div>

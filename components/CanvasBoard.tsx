@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 interface CanvasBoardProps {
   onDrawingChange?: (dataUrl: string) => void;
@@ -9,24 +9,124 @@ interface CanvasBoardProps {
   height?: number;
 }
 
-type DrawingTool = 'pen' | 'eraser';
-
-const COLORS = ['#ffffff', '#ff6b6b', '#4ecdc4', '#ffe66d', '#a8dadc', '#ff006e', '#8338ec'];
-
 export default function CanvasBoard({
   onDrawingChange,
   initialDrawing,
-  width = 400,
-  height = 400,
+  width = 600,
+  height = 600,
 }: CanvasBoardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
+  const isDrawingRef = useRef(false);
+  const lastXRef = useRef(0);
+  const lastYRef = useRef(0);
+  const dprRef = useRef(1);
+  
   const [hasDrawing, setHasDrawing] = useState(false);
-  const [currentTool, setCurrentTool] = useState<DrawingTool>('pen');
-  const [currentColor, setCurrentColor] = useState('#ffffff');
-  const [history, setHistory] = useState<string[]>([]);
+  const [brushSize, setBrushSize] = useState(4);
+  const [brushColor, setBrushColor] = useState('#ffffff');
+  const [history, setHistory] = useState<ImageData[]>([]);
   const [historyStep, setHistoryStep] = useState(-1);
+  const [showTools, setShowTools] = useState(true);
+  const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  const saveState = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const newHistory = history.slice(0, historyStep + 1);
+    newHistory.push(imageData);
+    
+    // Limit history to 20 steps
+    if (newHistory.length > 20) {
+      newHistory.shift();
+    } else {
+      setHistoryStep(newHistory.length - 1);
+    }
+    
+    setHistory(newHistory);
+  }, [history, historyStep]);
+
+  const restoreState = useCallback((step: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx || !history[step]) return;
+
+    ctx.putImageData(history[step], 0, 0);
+    setHistoryStep(step);
+    setHasDrawing(step >= 0);
+    
+    if (onDrawingChange) {
+      onDrawingChange(canvas.toDataURL());
+    }
+  }, [history, onDrawingChange]);
+
+  const throttledUpdate = useCallback(() => {
+    if (updateTimeoutRef.current) {
+      clearTimeout(updateTimeoutRef.current);
+    }
+    
+    updateTimeoutRef.current = setTimeout(() => {
+      const canvas = canvasRef.current;
+      if (canvas && onDrawingChange) {
+        onDrawingChange(canvas.toDataURL());
+      }
+    }, 100);
+  }, [onDrawingChange]);
+
+  // Initialize canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
+
+    // Set canvas size with device pixel ratio for crisp rendering
+    const dpr = window.devicePixelRatio || 1;
+    dprRef.current = dpr;
+    
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    ctx.scale(dpr, dpr);
+
+    // Set drawing styles
+    ctx.strokeStyle = brushColor;
+    ctx.lineWidth = brushSize;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Load initial drawing if provided
+    if (initialDrawing && history.length === 0) {
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, width, height);
+        setHasDrawing(true);
+        saveState();
+      };
+      img.src = initialDrawing;
+    }
+  }, [width, height, initialDrawing, history.length, saveState]);
+
+  // Update brush properties
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.strokeStyle = brushColor;
+    ctx.lineWidth = brushSize;
+  }, [brushSize, brushColor]);
+
+  // Drawing event handlers
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -34,131 +134,116 @@ export default function CanvasBoard({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas size
-    canvas.width = width;
-    canvas.height = height;
-
-    // Set drawing styles
-    ctx.strokeStyle = currentColor;
-    ctx.lineWidth = currentTool === 'eraser' ? 20 : 3;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    // Load initial drawing if provided
-    if (initialDrawing) {
-      const img = new Image();
-      img.onload = () => {
-        ctx.drawImage(img, 0, 0);
-        setHasDrawing(true);
-        saveToHistory();
+    const getCoordinates = (e: MouseEvent | TouchEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      
+      let clientX: number;
+      let clientY: number;
+      
+      if ('touches' in e && e.touches.length > 0) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else if ('clientX' in e) {
+        clientX = e.clientX;
+        clientY = e.clientY;
+      } else {
+        return { x: 0, y: 0 };
+      }
+      
+      return {
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY,
       };
-      img.src = initialDrawing;
-    } else {
-      saveToHistory();
-    }
-
-    // Drawing functions
-    let lastX = 0;
-    let lastY = 0;
+    };
 
     const startDrawing = (e: MouseEvent | TouchEvent) => {
-      setIsDrawing(true);
-      const rect = canvas.getBoundingClientRect();
-      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-      const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-      lastX = clientX - rect.left;
-      lastY = clientY - rect.top;
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const coords = getCoordinates(e);
+      lastXRef.current = coords.x;
+      lastYRef.current = coords.y;
+      isDrawingRef.current = true;
+      
+      // Draw initial point
+      ctx.beginPath();
+      ctx.arc(
+        lastXRef.current / dprRef.current,
+        lastYRef.current / dprRef.current,
+        brushSize / 2,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      
+      // Save state before drawing
+      saveState();
     };
 
     const draw = (e: MouseEvent | TouchEvent) => {
-      if (!isDrawing) return;
+      if (!isDrawingRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
 
-      e.preventDefault(); // Prevent scrolling on touch
+      const coords = getCoordinates(e);
+      const currentX = coords.x;
+      const currentY = coords.y;
 
-      const rect = canvas.getBoundingClientRect();
-      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-      const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-      const currentX = clientX - rect.left;
-      const currentY = clientY - rect.top;
+      // Convert to logical coordinates (accounting for DPR scaling)
+      const logicalX = currentX / dprRef.current;
+      const logicalY = currentY / dprRef.current;
+      const logicalLastX = lastXRef.current / dprRef.current;
+      const logicalLastY = lastYRef.current / dprRef.current;
 
-      ctx.globalCompositeOperation = currentTool === 'eraser' ? 'destination-out' : 'source-over';
       ctx.beginPath();
-      ctx.moveTo(lastX, lastY);
-      ctx.lineTo(currentX, currentY);
+      ctx.moveTo(logicalLastX, logicalLastY);
+      ctx.lineTo(logicalX, logicalY);
       ctx.stroke();
 
-      lastX = currentX;
-      lastY = currentY;
+      lastXRef.current = currentX;
+      lastYRef.current = currentY;
       setHasDrawing(true);
-
-      // Notify parent of drawing change (throttled)
-      if (onDrawingChange) {
-        onDrawingChange(canvas.toDataURL());
-      }
+      throttledUpdate();
     };
 
-    const stopDrawing = () => {
-      if (isDrawing) {
-        saveToHistory();
-        if (onDrawingChange) {
-          onDrawingChange(canvas.toDataURL());
-        }
+    const stopDrawing = (e: MouseEvent | TouchEvent) => {
+      if (isDrawingRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        isDrawingRef.current = false;
+        saveState();
+        throttledUpdate();
       }
-      setIsDrawing(false);
     };
 
     // Mouse events
     canvas.addEventListener('mousedown', startDrawing);
     canvas.addEventListener('mousemove', draw);
     canvas.addEventListener('mouseup', stopDrawing);
-    canvas.addEventListener('mouseout', stopDrawing);
+    canvas.addEventListener('mouseleave', stopDrawing);
 
     // Touch events
     canvas.addEventListener('touchstart', startDrawing, { passive: false });
     canvas.addEventListener('touchmove', draw, { passive: false });
-    canvas.addEventListener('touchend', stopDrawing);
+    canvas.addEventListener('touchend', stopDrawing, { passive: false });
+    canvas.addEventListener('touchcancel', stopDrawing, { passive: false });
 
     return () => {
       canvas.removeEventListener('mousedown', startDrawing);
       canvas.removeEventListener('mousemove', draw);
       canvas.removeEventListener('mouseup', stopDrawing);
-      canvas.removeEventListener('mouseout', stopDrawing);
+      canvas.removeEventListener('mouseleave', stopDrawing);
       canvas.removeEventListener('touchstart', startDrawing);
       canvas.removeEventListener('touchmove', draw);
       canvas.removeEventListener('touchend', stopDrawing);
-    };
-  }, [isDrawing, onDrawingChange, initialDrawing, width, height, currentColor, currentTool]);
-
-  const saveToHistory = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const dataUrl = canvas.toDataURL();
-    setHistory((prev) => {
-      const newHistory = prev.slice(0, historyStep + 1);
-      newHistory.push(dataUrl);
-      return newHistory;
-    });
-    setHistoryStep((prev) => prev + 1);
-  };
-
-  const loadFromHistory = (dataUrl: string) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const img = new Image();
-    img.onload = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-      if (onDrawingChange) {
-        onDrawingChange(canvas.toDataURL());
+      canvas.removeEventListener('touchcancel', stopDrawing);
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
       }
     };
-    img.src = dataUrl;
-  };
+  }, [saveState, throttledUpdate, brushSize]);
 
   const clearCanvas = () => {
     const canvas = canvasRef.current;
@@ -169,7 +254,8 @@ export default function CanvasBoard({
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     setHasDrawing(false);
-    saveToHistory();
+    setHistory([]);
+    setHistoryStep(-1);
     if (onDrawingChange) {
       onDrawingChange(canvas.toDataURL());
     }
@@ -177,105 +263,151 @@ export default function CanvasBoard({
 
   const undo = () => {
     if (historyStep > 0) {
-      const newStep = historyStep - 1;
-      setHistoryStep(newStep);
-      loadFromHistory(history[newStep]);
-      setHasDrawing(newStep > 0);
+      restoreState(historyStep - 1);
+    } else if (historyStep === 0) {
+      clearCanvas();
     }
   };
 
   const redo = () => {
     if (historyStep < history.length - 1) {
-      const newStep = historyStep + 1;
-      setHistoryStep(newStep);
-      loadFromHistory(history[newStep]);
-      setHasDrawing(true);
+      restoreState(historyStep + 1);
     }
   };
 
+  const brushSizes = [2, 4, 6, 8, 12, 16];
+  const brushColors = [
+    '#ffffff',
+    '#000000',
+    '#ff0000',
+    '#00ff00',
+    '#0000ff',
+    '#ffff00',
+    '#ff00ff',
+    '#00ffff',
+  ];
+
   return (
     <div className="space-y-4">
-      {/* Color Palette */}
-      <div className="flex items-center justify-center gap-3 rounded-2xl bg-black/30 p-3 backdrop-blur-sm">
-        <span className="text-sm text-white/70">Color:</span>
-        <div className="flex gap-2">
-          {COLORS.map((color) => (
-            <button
-              key={color}
-              onClick={() => {
-                setCurrentColor(color);
-                setCurrentTool('pen');
-              }}
-              className={`h-8 w-8 rounded-full border-2 transition-all ${
-                currentColor === color && currentTool === 'pen'
-                  ? 'border-white scale-110'
-                  : 'border-white/30 hover:scale-105'
-              }`}
-              style={{ backgroundColor: color }}
-              aria-label={`Select color ${color}`}
-            />
-          ))}
-        </div>
-      </div>
+      {/* Tools Panel */}
+      {showTools && (
+        <div className="glass rounded-2xl p-4 backdrop-blur border border-white/10">
+          <div className="flex flex-wrap items-center gap-4">
+            {/* Brush Size */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-white/70">Size:</span>
+              <div className="flex gap-1">
+                {brushSizes.map((size) => (
+                  <button
+                    key={size}
+                    onClick={() => setBrushSize(size)}
+                    className={`flex items-center justify-center rounded-full transition-all ${
+                      brushSize === size
+                        ? 'bg-white text-gray-900 scale-110'
+                        : 'bg-white/10 text-white hover:bg-white/20'
+                    }`}
+                    style={{
+                      width: `${Math.max(size + 8, 24)}px`,
+                      height: `${Math.max(size + 8, 24)}px`,
+                    }}
+                    title={`Brush size ${size}px`}
+                  >
+                    <div
+                      className="rounded-full bg-current"
+                      style={{
+                        width: `${size}px`,
+                        height: `${size}px`,
+                      }}
+                    />
+                  </button>
+                ))}
+              </div>
+            </div>
 
-      <div className="relative rounded-xl overflow-hidden bg-black/20 backdrop-blur-sm border-2 border-white/20">
+            {/* Brush Color */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-white/70">Color:</span>
+              <div className="flex gap-1">
+                {brushColors.map((color) => (
+                  <button
+                    key={color}
+                    onClick={() => setBrushColor(color)}
+                    className={`h-8 w-8 rounded-full transition-all border-2 ${
+                      brushColor === color
+                        ? 'border-white scale-110 shadow-lg'
+                        : 'border-white/30 hover:border-white/60'
+                    }`}
+                    style={{ backgroundColor: color }}
+                    title={`Color ${color}`}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Canvas Container */}
+      <div className="relative rounded-2xl overflow-hidden bg-black/30 backdrop-blur-sm border-2 border-white/20 shadow-2xl">
         <canvas
           ref={canvasRef}
-          className="w-full h-auto cursor-crosshair touch-none"
-          style={{ maxWidth: '100%', height: 'auto' }}
-          aria-label="Drawing canvas"
+          className="w-full h-auto cursor-crosshair touch-none block"
+          style={{ 
+            maxWidth: '100%', 
+            height: 'auto',
+            display: 'block',
+          }}
         />
+        {!hasDrawing && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <p className="text-white/40 text-sm">Start drawing...</p>
+          </div>
+        )}
       </div>
 
-      {/* Tools */}
-      <div className="flex flex-wrap gap-3 justify-center">
+      {/* Action Buttons */}
+      <div className="flex flex-wrap items-center justify-center gap-3">
         <button
-          onClick={() => setCurrentTool('pen')}
-          className={`px-4 py-2 rounded-full transition-all backdrop-blur-sm ${
-            currentTool === 'pen'
-              ? 'bg-white text-gray-900'
-              : 'bg-black/30 hover:bg-black/50'
-          }`}
-          aria-label="Pen tool"
-          aria-pressed={currentTool === 'pen'}
+          onClick={() => setShowTools(!showTools)}
+          className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all backdrop-blur-sm border border-white/20"
+          title="Toggle tools"
         >
-          ✏️ Pen
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+          </svg>
         </button>
-        <button
-          onClick={() => setCurrentTool('eraser')}
-          className={`px-4 py-2 rounded-full transition-all backdrop-blur-sm ${
-            currentTool === 'eraser'
-              ? 'bg-white text-gray-900'
-              : 'bg-black/30 hover:bg-black/50'
-          }`}
-          aria-label="Eraser tool"
-          aria-pressed={currentTool === 'eraser'}
-        >
-          🧹 Eraser
-        </button>
+
         <button
           onClick={undo}
-          disabled={historyStep <= 0}
-          className="px-4 py-2 rounded-full bg-black/30 hover:bg-black/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm"
-          aria-label="Undo"
+          disabled={historyStep < 0}
+          className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm border border-white/20 text-white"
+          title="Undo"
         >
-          ↶ Undo
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+          </svg>
         </button>
+
         <button
           onClick={redo}
           disabled={historyStep >= history.length - 1}
-          className="px-4 py-2 rounded-full bg-black/30 hover:bg-black/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm"
-          aria-label="Redo"
+          className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm border border-white/20 text-white"
+          title="Redo"
         >
-          ↷ Redo
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6" />
+          </svg>
         </button>
+
         <button
           onClick={clearCanvas}
           disabled={!hasDrawing}
-          className="px-4 py-2 rounded-full bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm"
-          aria-label="Clear canvas"
+          className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm border border-white/20 text-white"
+          title="Clear canvas"
         >
-          🗑️ Clear
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
         </button>
       </div>
     </div>
