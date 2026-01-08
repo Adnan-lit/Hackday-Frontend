@@ -6,6 +6,7 @@ import MoodPicker from '@/components/MoodPicker';
 import ThemeWrapper from '@/components/ThemeWrapper';
 import CanvasBoard from '@/components/CanvasBoard';
 import { useWhispers } from '@/app/context/WhisperContext';
+import { useToast } from '@/app/context/ToastContext';
 import type { Mood } from '@/app/lib/mockData';
 
 type CreateStep = 'mood' | 'draw' | 'publish';
@@ -13,9 +14,11 @@ type CreateStep = 'mood' | 'draw' | 'publish';
 export default function CreatePage() {
   const router = useRouter();
   const { addNewWhisper } = useWhispers();
+  const { showToast } = useToast();
   const [step, setStep] = useState<CreateStep>('mood');
   const [selectedMood, setSelectedMood] = useState<Mood | undefined>();
   const [drawingUrl, setDrawingUrl] = useState<string>('');
+  const [isPublishing, setIsPublishing] = useState(false);
 
   const handleMoodSelect = (mood: Mood) => {
     setSelectedMood(mood);
@@ -26,23 +29,34 @@ export default function CreatePage() {
     setDrawingUrl(dataUrl);
   };
 
-  const handlePublish = () => {
-    if (!selectedMood) return;
+  const handlePublish = async () => {
+    if (!selectedMood || isPublishing) return;
 
-    const whisper = addNewWhisper({
-      mood: selectedMood,
-      theme: selectedMood,
-      drawingUrl: drawingUrl || '',
-      reactions: {
-        love: 0,
-        calm: 0,
-        sad: 0,
-        angry: 0,
-        rainbow: 0,
-      },
-    });
+    setIsPublishing(true);
+    
+    try {
+      // Simulate network delay for better UX feedback
+      await new Promise((resolve) => setTimeout(resolve, 800));
 
-    router.push(`/view/${whisper.id}`);
+      const whisper = addNewWhisper({
+        mood: selectedMood,
+        theme: selectedMood,
+        drawingUrl: drawingUrl || '',
+        reactions: {
+          love: 0,
+          calm: 0,
+          sad: 0,
+          angry: 0,
+          rainbow: 0,
+        },
+      });
+
+      showToast('Whisper published successfully! 🎉', 'success');
+      router.push(`/view/${whisper.id}`);
+    } catch (error) {
+      showToast('Failed to publish whisper. Please try again.', 'error');
+      setIsPublishing(false);
+    }
   };
 
   const handleBack = () => {
@@ -161,15 +175,26 @@ export default function CreatePage() {
                 <div className="flex flex-col sm:flex-row gap-4 w-full max-w-md">
                   <button
                     onClick={() => setStep('draw')}
-                    className="flex-1 px-6 py-3 rounded-full bg-white/20 hover:bg-white/30 transition-all backdrop-blur-sm"
+                    disabled={isPublishing}
+                    className="flex-1 px-6 py-3 rounded-full bg-white/20 hover:bg-white/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm"
+                    aria-label="Go back to drawing"
                   >
                     Back
                   </button>
                   <button
                     onClick={handlePublish}
-                    className="flex-1 px-6 py-3 rounded-full bg-white hover:bg-white/90 text-gray-900 font-medium transition-all transform hover:scale-105 active:scale-95"
+                    disabled={isPublishing}
+                    className="flex-1 px-6 py-3 rounded-full bg-white hover:bg-white/90 text-gray-900 font-medium transition-all transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
+                    aria-label="Publish whisper"
                   >
-                    Publish
+                    {isPublishing ? (
+                      <>
+                        <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-900/30 border-t-gray-900" />
+                        Publishing...
+                      </>
+                    ) : (
+                      'Publish'
+                    )}
                   </button>
                 </div>
               </div>

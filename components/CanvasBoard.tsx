@@ -9,6 +9,10 @@ interface CanvasBoardProps {
   height?: number;
 }
 
+type DrawingTool = 'pen' | 'eraser';
+
+const COLORS = ['#ffffff', '#ff6b6b', '#4ecdc4', '#ffe66d', '#a8dadc', '#ff006e', '#8338ec'];
+
 export default function CanvasBoard({
   onDrawingChange,
   initialDrawing,
@@ -18,6 +22,10 @@ export default function CanvasBoard({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [hasDrawing, setHasDrawing] = useState(false);
+  const [currentTool, setCurrentTool] = useState<DrawingTool>('pen');
+  const [currentColor, setCurrentColor] = useState('#ffffff');
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyStep, setHistoryStep] = useState(-1);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -31,8 +39,8 @@ export default function CanvasBoard({
     canvas.height = height;
 
     // Set drawing styles
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 3;
+    ctx.strokeStyle = currentColor;
+    ctx.lineWidth = currentTool === 'eraser' ? 20 : 3;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
@@ -42,8 +50,11 @@ export default function CanvasBoard({
       img.onload = () => {
         ctx.drawImage(img, 0, 0);
         setHasDrawing(true);
+        saveToHistory();
       };
       img.src = initialDrawing;
+    } else {
+      saveToHistory();
     }
 
     // Drawing functions
@@ -70,6 +81,7 @@ export default function CanvasBoard({
       const currentX = clientX - rect.left;
       const currentY = clientY - rect.top;
 
+      ctx.globalCompositeOperation = currentTool === 'eraser' ? 'destination-out' : 'source-over';
       ctx.beginPath();
       ctx.moveTo(lastX, lastY);
       ctx.lineTo(currentX, currentY);
@@ -86,8 +98,11 @@ export default function CanvasBoard({
     };
 
     const stopDrawing = () => {
-      if (isDrawing && onDrawingChange) {
-        onDrawingChange(canvas.toDataURL());
+      if (isDrawing) {
+        saveToHistory();
+        if (onDrawingChange) {
+          onDrawingChange(canvas.toDataURL());
+        }
       }
       setIsDrawing(false);
     };
@@ -112,7 +127,38 @@ export default function CanvasBoard({
       canvas.removeEventListener('touchmove', draw);
       canvas.removeEventListener('touchend', stopDrawing);
     };
-  }, [isDrawing, onDrawingChange, initialDrawing, width, height]);
+  }, [isDrawing, onDrawingChange, initialDrawing, width, height, currentColor, currentTool]);
+
+  const saveToHistory = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const dataUrl = canvas.toDataURL();
+    setHistory((prev) => {
+      const newHistory = prev.slice(0, historyStep + 1);
+      newHistory.push(dataUrl);
+      return newHistory;
+    });
+    setHistoryStep((prev) => prev + 1);
+  };
+
+  const loadFromHistory = (dataUrl: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      if (onDrawingChange) {
+        onDrawingChange(canvas.toDataURL());
+      }
+    };
+    img.src = dataUrl;
+  };
 
   const clearCanvas = () => {
     const canvas = canvasRef.current;
@@ -123,44 +169,113 @@ export default function CanvasBoard({
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     setHasDrawing(false);
+    saveToHistory();
     if (onDrawingChange) {
       onDrawingChange(canvas.toDataURL());
     }
   };
 
   const undo = () => {
-    // For simplicity, we'll just clear the canvas
-    // In a more advanced implementation, you'd maintain a history stack
-    clearCanvas();
+    if (historyStep > 0) {
+      const newStep = historyStep - 1;
+      setHistoryStep(newStep);
+      loadFromHistory(history[newStep]);
+      setHasDrawing(newStep > 0);
+    }
+  };
+
+  const redo = () => {
+    if (historyStep < history.length - 1) {
+      const newStep = historyStep + 1;
+      setHistoryStep(newStep);
+      loadFromHistory(history[newStep]);
+      setHasDrawing(true);
+    }
   };
 
   return (
     <div className="space-y-4">
+      {/* Color Palette */}
+      <div className="flex items-center justify-center gap-3 rounded-2xl bg-black/30 p-3 backdrop-blur-sm">
+        <span className="text-sm text-white/70">Color:</span>
+        <div className="flex gap-2">
+          {COLORS.map((color) => (
+            <button
+              key={color}
+              onClick={() => {
+                setCurrentColor(color);
+                setCurrentTool('pen');
+              }}
+              className={`h-8 w-8 rounded-full border-2 transition-all ${
+                currentColor === color && currentTool === 'pen'
+                  ? 'border-white scale-110'
+                  : 'border-white/30 hover:scale-105'
+              }`}
+              style={{ backgroundColor: color }}
+              aria-label={`Select color ${color}`}
+            />
+          ))}
+        </div>
+      </div>
+
       <div className="relative rounded-xl overflow-hidden bg-black/20 backdrop-blur-sm border-2 border-white/20">
         <canvas
           ref={canvasRef}
           className="w-full h-auto cursor-crosshair touch-none"
           style={{ maxWidth: '100%', height: 'auto' }}
+          aria-label="Drawing canvas"
         />
       </div>
-      <div className="flex gap-3 justify-center">
+
+      {/* Tools */}
+      <div className="flex flex-wrap gap-3 justify-center">
+        <button
+          onClick={() => setCurrentTool('pen')}
+          className={`px-4 py-2 rounded-full transition-all backdrop-blur-sm ${
+            currentTool === 'pen'
+              ? 'bg-white text-gray-900'
+              : 'bg-black/30 hover:bg-black/50'
+          }`}
+          aria-label="Pen tool"
+          aria-pressed={currentTool === 'pen'}
+        >
+          ✏️ Pen
+        </button>
+        <button
+          onClick={() => setCurrentTool('eraser')}
+          className={`px-4 py-2 rounded-full transition-all backdrop-blur-sm ${
+            currentTool === 'eraser'
+              ? 'bg-white text-gray-900'
+              : 'bg-black/30 hover:bg-black/50'
+          }`}
+          aria-label="Eraser tool"
+          aria-pressed={currentTool === 'eraser'}
+        >
+          🧹 Eraser
+        </button>
         <button
           onClick={undo}
-          disabled={!hasDrawing}
+          disabled={historyStep <= 0}
           className="px-4 py-2 rounded-full bg-black/30 hover:bg-black/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm"
+          aria-label="Undo"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-          </svg>
+          ↶ Undo
+        </button>
+        <button
+          onClick={redo}
+          disabled={historyStep >= history.length - 1}
+          className="px-4 py-2 rounded-full bg-black/30 hover:bg-black/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm"
+          aria-label="Redo"
+        >
+          ↷ Redo
         </button>
         <button
           onClick={clearCanvas}
           disabled={!hasDrawing}
-          className="px-4 py-2 rounded-full bg-black/30 hover:bg-black/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm"
+          className="px-4 py-2 rounded-full bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all backdrop-blur-sm"
+          aria-label="Clear canvas"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
+          🗑️ Clear
         </button>
       </div>
     </div>

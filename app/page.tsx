@@ -15,9 +15,11 @@ import {
 import { RiCompass3Line, RiMusic2Line, RiHeart3Line } from 'react-icons/ri';
 import { MdMusicNote } from 'react-icons/md';
 import FeedWhisperCard from '@/components/FeedWhisperCard';
+import { FeedSkeleton } from '@/components/SkeletonLoader';
 import MatchedEmotionRow from '@/components/MatchedEmotionRow';
 import MusicRecommendationRow from '@/components/MusicRecommendationRow';
 import { useWhispers } from '@/app/context/WhisperContext';
+import { useToast } from '@/app/context/ToastContext';
 import type { Mood } from '@/app/lib/mockData';
 import type { ReactionType } from '@/components/ReactionBar';
 
@@ -41,10 +43,18 @@ const composerActions = [
 export default function HomePage() {
   const [moodFilter, setMoodFilter] = useState<Mood | 'all'>('all');
   const [sortBy, setSortBy] = useState<'latest' | 'trending' | 'friends'>('latest');
+  const [isLoading, setIsLoading] = useState(true);
   const { whispers, refreshWhispers, reactToWhisper } = useWhispers();
+  const { showToast } = useToast();
 
   useEffect(() => {
-    refreshWhispers();
+    const loadData = async () => {
+      setIsLoading(true);
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      refreshWhispers();
+      setIsLoading(false);
+    };
+    loadData();
   }, [refreshWhispers]);
 
   // Filter whispers
@@ -69,6 +79,7 @@ export default function HomePage() {
 
   const handleReaction = (whisperId: string, reaction: ReactionType) => {
     reactToWhisper(whisperId, reaction);
+    showToast('Reaction added! 💫', 'success', 2000);
   };
 
   const moods: Array<Mood | 'all'> = ['all', 'happy', 'sad', 'calm', 'angry', 'excited', 'tired'];
@@ -246,16 +257,18 @@ export default function HomePage() {
           </header>
 
           {/* Mood Filters */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Filter whispers by mood">
             {moods.map((mood) => (
               <button
                 key={mood}
                 onClick={() => setMoodFilter(mood)}
-                className={`rounded-full px-4 py-2 text-sm font-medium transition-all ${
+                className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition ${
                   moodFilter === mood
-                    ? 'bg-white text-slate-900 shadow-lg'
-                    : 'bg-white/5 text-slate-200 hover:bg-white/10'
+                    ? 'bg-white text-slate-900 shadow-lg scale-105'
+                    : 'bg-white/10 text-slate-200 hover:bg-white/20'
                 }`}
+                aria-pressed={moodFilter === mood}
+                aria-label={`Filter by ${mood} mood`}
               >
                 <span className="text-base">{moodLabels[mood]}</span>
                 {mood !== 'all' && <span className="ml-2 hidden sm:inline capitalize">{mood}</span>}
@@ -265,10 +278,18 @@ export default function HomePage() {
 
           {/* Feed */}
           <div className="space-y-5">
-            {filteredWhispers.length === 0 ? (
+            {isLoading ? (
+              <FeedSkeleton count={3} />
+            ) : filteredWhispers.length === 0 ? (
               <div className="glass animate-fade-up rounded-3xl p-8 backdrop-blur text-center">
                 <p className="text-4xl mb-4">😶</p>
                 <p className="text-white/60">No whispers found</p>
+                <Link
+                  href="/create"
+                  className="mt-4 inline-block px-6 py-2 rounded-full bg-white/10 hover:bg-white/20 transition-all"
+                >
+                  Create your first whisper
+                </Link>
               </div>
             ) : (
               filteredWhispers.map((whisper, index) => (
